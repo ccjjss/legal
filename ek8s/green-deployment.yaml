@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lega-front-green
+  labels:
+    app: lega-front-green
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: lega-front-green
+  template:
+    metadata:
+      labels:
+        app: lega-front-green
+    spec:
+      containers:
+      - name: lega-front-container
+        image: 768331025805.dkr.ecr.us-east-1.amazonaws.com/lega-front:<IMAGE_TAG>
+        ports:
+        - containerPort: 80
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "500m"
+          limits:
+            memory: "512Mi"
+            cpu: "1"
