@@ -1,0 +1,97 @@
+name: Build and Deploy to EKS
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build-and-push:
+    name: Build and Push Docker Image
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v3
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v1.2.0
+
+      - name: Build, Tag, and Push Docker Image
+        env:
+          ECR_REPOSITORY: ${{ secrets.AWS_REPOSITORY }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REPOSITORY:$IMAGE_TAG ./docker
+          docker push $ECR_REPOSITORY:$IMAGE_TAG
+
+  deploy:
+    name: Deploy to EKS
+    runs-on: ubuntu-latest
+    needs: build-and-push
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+        
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v3
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'latest'
+
+      - name: Update kubeconfig for EKS
+        run: |
+          aws eks update-kubeconfig --region ${{ secrets.AWS_REGION }} --name ${{ secrets.EKS_CLUSTER_NAME }}
+
+      - name: Deploy Blue Deployment
+        env:
+          ECR_REPOSITORY: ${{ secrets.AWS_REPOSITORY }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          # Check if Blue exists, deploy if missing
+          kubectl get deployment lega-front-blue || kubectl apply -f <(sed "s/<IMAGE_TAG>/$IMAGE_TAG/g" ek8s/blue-deployment.yaml)
+          kubectl rollout status deployment/lega-front-blue
+
+          kubectl get deployment lega-front-blue -o jsonpath='{.status.readyReplicas}'
+          kubectl patch service lega-front-service -p '{"spec":{"selector":{"app":"lega-front-blue"}}}'
+          sleep 10
+
+
+      - name: Deploy Green Deployment
+        env:
+          ECR_REPOSITORY: ${{ secrets.AWS_REPOSITORY }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          # Deploy Green
+          kubectl apply -f <(sed "s/<IMAGE_TAG>/$IMAGE_TAG/g" ek8s/green-deployment.yaml)
+          kubectl rollout status deployment/lega-front-green
+
+      - name: Switch Traffic to Green
+        run: |
+          kubectl get deployment lega-front-green -o jsonpath='{.status.readyReplicas}'        
+          kubectl patch service lega-front-service -p '{"spec":{"selector":{"app":"lega-front-green"}}}'
+          sleep 10
+
+      - name: Clean Up Blue Deployment
+        run: |
+          kubectl delete deployment lega-front-blue || true
+
+      - name: Verify Deployment
+        run: |
+          kubectl get pods -o wide
+          kubectl get services -o wide
